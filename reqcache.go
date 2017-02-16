@@ -127,7 +127,9 @@ func (lruc *LRUCache) callOnEvict(evicted []*LRUCacheEntry) {
 
 // Get returns the value corresponding to the specialized key, caching the
 // result. Returns an error if and only if there was a cache miss and the
-// provided fetch() function returned an error.
+// provided fetch() function returned an error. If Put() is called while
+// a fetch is blocking, then the result of the fetch is thrown away and the
+// value specified by Put() is returned.
 func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 	lruc.cacheLock.Lock()
 	entry, ok := lruc.cache[key]
@@ -162,29 +164,36 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 	/* Fetch the value. */
 	value, size, err := lruc.fetch(key)
 
-	/* Check for and handle error in fetching the value. */
-	if err != nil {
+	/*
+	 * If the pending flag is no longer set, then someone called Put()
+	 * meanwhile. We don't want to touch the cache or use the new value we
+	 * got; instead, just use the value that was put there.
+	 */
+	if entry.pending {
+		/* Check for and handle any error in fetching the value. */
+		if err != nil {
+			lruc.cacheLock.Lock()
+			delete(lruc.cache, key)
+			entry.err = err
+			entry.pending = false
+			entry.ready.Broadcast()
+			lruc.cacheLock.Unlock()
+			return nil, err
+		}
+
+		/* Store the result in the cache. */
 		lruc.cacheLock.Lock()
-		delete(lruc.cache, key)
-		entry.err = err
+		entry.value = value
+		entry.size = size
 		entry.pending = false
 		entry.ready.Broadcast()
+		evicted := lruc.addEntryToLRU(entry)
 		lruc.cacheLock.Unlock()
-		return nil, err
+
+		lruc.callOnEvict(evicted)
 	}
 
-	/* Store the result in the cache. */
-	lruc.cacheLock.Lock()
-	entry.value = value
-	entry.size = size
-	entry.pending = false
-	entry.ready.Broadcast()
-	evicted := lruc.addEntryToLRU(entry)
-	lruc.cacheLock.Unlock()
-
-	lruc.callOnEvict(evicted)
-
-	return value, nil
+	return entry.value, nil
 }
 
 // Put an entry with a known value into the cache.
