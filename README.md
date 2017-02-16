@@ -16,3 +16,11 @@ meaning that:
 1. While one operation is blocking due to a cache miss, additional operations
 on the cache will not block.
 2. Multiple fetches for resources can be concurrently pending.
+
+This library is also context-aware.
+
+License
+-------
+This library is licensed under the BSD 3-Clause License, but can also be
+licensed under the GNU GPL v3 License and freely used in projects licensed
+as GNU GPL v3.

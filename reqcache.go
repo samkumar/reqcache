@@ -93,9 +93,11 @@ type LRUCacheEntry struct {
 }
 
 // NewLRUCache returns a new instance of LRUCache.
+//
 // capacity is the capacity of the cache. If the sum of the sizes of elements in
 // the cache exceeds the capacity, the least recently used elements are evicted
 // from the cache.
+//
 // fetch is a function that is called on cache misses to fetch the element that
 // is missing in the cache. The key that missed in the cache is passed as the
 // argument. The function should return the corresponding value, and the size
@@ -108,6 +110,7 @@ type LRUCacheEntry struct {
 // to get are interested in the result, which may happen if the contexts of all
 // requesting goroutines time out, or if Put() is caled while the request is
 // being fetched.
+//
 // onEvict is a function that is whenever elements are evicted from the cache
 // according to the LRU replacement policy. It is called with the key-value
 // pairs representing the evicted elements passed as arguments. It is not
