@@ -166,10 +166,39 @@ func (lruc *LRUCache) SetCapacity(capacity uint64) {
 	lruc.callOnEvict(evicted)
 }
 
-type fetchresult struct {
-	value interface{}
-	size  uint64
-	err   error
+// CacheStatus describes the presence of an item in the cache.
+type CacheStatus int
+
+const (
+	// Present status indicates that the specified item is in the cache.
+	Present CacheStatus = iota
+
+	// Pending status indicates that the specified item is not in the cache,
+	// but that there is a pending request for the item.
+	Pending CacheStatus = iota
+
+	// Missing status indicates that the specified item is not in the cache,
+	// and that there is no outstanding request for the item.
+	Missing CacheStatus = iota
+)
+
+// TryGet checks if an element is present in the cache. The second return
+// value describes the presence of the item in the cache; if it is Present,
+// then provides the value corresponding to the provided key in the first
+// return value.
+func (lruc *LRUCache) TryGet(key interface{}) (interface{}, CacheStatus) {
+	lruc.cacheLock.Lock()
+	defer lruc.cacheLock.Unlock()
+
+	value, ok := lruc.cache[key]
+	if !ok {
+		return value, Missing
+	} else if value.pending {
+		return value, Pending
+	} else {
+		return value, Present
+	}
+
 }
 
 // Get returns the value corresponding to the specialized key, caching the
