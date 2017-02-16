@@ -180,10 +180,10 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 	 * meanwhile. We don't want to touch the cache or use the new value we
 	 * got; instead, just use the value that was put there.
 	 */
+	lruc.cacheLock.Lock()
 	if entry.pending {
 		/* Check for and handle any error in fetching the value. */
 		if err != nil {
-			lruc.cacheLock.Lock()
 			delete(lruc.cache, key)
 			entry.err = err
 			entry.pending = false
@@ -193,7 +193,6 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 		}
 
 		/* Store the result in the cache. */
-		lruc.cacheLock.Lock()
 		entry.value = value
 		entry.size = size
 		entry.pending = false
