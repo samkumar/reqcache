@@ -125,6 +125,17 @@ func (lruc *LRUCache) callOnEvict(evicted []*LRUCacheEntry) {
 	}
 }
 
+// SetCapacity sets the capacity of the cache, evicting elements if necessary.
+func (lruc *LRUCache) SetCapacity(capacity uint64) {
+	lruc.cacheLock.Lock()
+	lruc.lruLock.Lock()
+	lruc.capacity = capacity
+	evicted := lruc.evictEntriesIfNecessary()
+	lruc.lruLock.Unlock()
+	lruc.cacheLock.Unlock()
+	lruc.callOnEvict(evicted)
+}
+
 // Get returns the value corresponding to the specialized key, caching the
 // result. Returns an error if and only if there was a cache miss and the
 // provided fetch() function returned an error. If Put() is called while
