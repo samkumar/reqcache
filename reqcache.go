@@ -38,16 +38,13 @@ import (
 
 // LRUCache represents a Cache with an LRU eviction policy
 type LRUCache struct {
-	cache    map[interface{}]*LRUCacheEntry
-	fetch    func(key interface{}) (interface{}, uint64, error)
-	onEvict  func(key, value interface{})
-	lruList  *list.List
-	size     uint64
-	capacity uint64
-
-	// Lock ordering is to always acquire the cacheLock before the lruLock
+	cache     map[interface{}]*LRUCacheEntry
+	fetch     func(key interface{}) (interface{}, uint64, error)
+	onEvict   func(key, value interface{})
+	lruList   *list.List
+	size      uint64
+	capacity  uint64
 	cacheLock *sync.Mutex
-	lruLock   *sync.Mutex
 }
 
 // LRUCacheEntry represents an entry in the LRU Cache. The size of this struct
@@ -88,15 +85,11 @@ func NewLRUCache(capacity uint64, fetch func(key interface{}) (interface{}, uint
 		lruList:   list.New(),
 		capacity:  capacity,
 		cacheLock: &sync.Mutex{},
-		lruLock:   &sync.Mutex{},
 	}
 }
 
-// The cacheLock, but not the lruLock, must be held when this function executes.
+// The cacheLock must be held when this function executes.
 func (lruc *LRUCache) addEntryToLRU(entry *LRUCacheEntry) []*LRUCacheEntry {
-	lruc.lruLock.Lock()
-	defer lruc.lruLock.Unlock()
-
 	entry.element = lruc.lruList.PushFront(entry)
 	lruc.size += entry.size
 	return lruc.evictEntriesIfNecessary()
@@ -129,10 +122,8 @@ func (lruc *LRUCache) callOnEvict(evicted []*LRUCacheEntry) {
 // SetCapacity sets the capacity of the cache, evicting elements if necessary.
 func (lruc *LRUCache) SetCapacity(capacity uint64) {
 	lruc.cacheLock.Lock()
-	lruc.lruLock.Lock()
 	lruc.capacity = capacity
 	evicted := lruc.evictEntriesIfNecessary()
-	lruc.lruLock.Unlock()
 	lruc.cacheLock.Unlock()
 	lruc.callOnEvict(evicted)
 }
@@ -164,9 +155,7 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 		}
 
 		/* Cache hit. */
-		lruc.lruLock.Lock()
 		lruc.lruList.MoveToFront(entry.element)
-		lruc.lruLock.Unlock()
 		value := entry.value
 		lruc.cacheLock.Unlock()
 		return value, nil
@@ -262,31 +251,27 @@ func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool 
 // Evict an entry from the cache.
 func (lruc *LRUCache) Evict(key interface{}) bool {
 	lruc.cacheLock.Lock()
+	defer lruc.cacheLock.Unlock()
+
 	entry, ok := lruc.cache[key]
 	if !ok {
-		lruc.cacheLock.Unlock()
 		return false
 	}
-	lruc.lruLock.Lock()
 	lruc.lruList.Remove(entry.element)
 	delete(lruc.cache, entry.key)
 	lruc.size -= entry.size
-	lruc.lruLock.Unlock()
-	lruc.cacheLock.Unlock()
 	return true
 }
 
 // Invalidate empties the cache, calling the onEvict callback as appropriate.
 func (lruc *LRUCache) Invalidate() {
 	lruc.cacheLock.Lock()
-	lruc.lruLock.Lock()
 	oldCapacity := lruc.capacity
 
 	lruc.capacity = 0
 	entries := lruc.evictEntriesIfNecessary()
 
 	lruc.capacity = oldCapacity
-	lruc.lruLock.Unlock()
 	lruc.cacheLock.Unlock()
 
 	lruc.callOnEvict(entries)
