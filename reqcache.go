@@ -40,7 +40,7 @@ import (
 type LRUCache struct {
 	cache     map[interface{}]*LRUCacheEntry
 	fetch     func(key interface{}) (interface{}, uint64, error)
-	onEvict   func(key, value interface{})
+	onEvict   func(evicted []*LRUCacheEntry)
 	lruList   *list.List
 	size      uint64
 	capacity  uint64
@@ -51,8 +51,8 @@ type LRUCache struct {
 // is the overhead of an entry existing in the cache. You should not have to
 // actually use it.
 type LRUCacheEntry struct {
-	key     interface{}
-	value   interface{}
+	Key     interface{}
+	Value   interface{}
 	size    uint64
 	pending bool
 	err     error
@@ -72,12 +72,13 @@ type LRUCacheEntry struct {
 // not cached and the error is propagated to callers of Get(). No locks are
 // held when fetch is called, so it is suitable to do blocking operations to
 // fetch data.
-// onEvict is a function that is whenever an element is evicted from the cache
-// according to the LRU replacement policy. It is called with the key and value
-// of the evicted element passed as arguments. It is not called with locks held,
-// so it can perform blocking operations or even interact with this cache. It
-// can be set to nil if the onEvict callback is not needed.
-func NewLRUCache(capacity uint64, fetch func(key interface{}) (interface{}, uint64, error), onEvict func(key, value interface{})) *LRUCache {
+// onEvict is a function that is whenever elements are evicted from the cache
+// according to the LRU replacement policy. It is called with the key-value
+// pairs representing the evicted elements passed as arguments. It is not
+// called with locks held, so it can perform blocking operations or even
+// interact with this cache. It can be set to nil if the onEvict callback is
+// not needed.
+func NewLRUCache(capacity uint64, fetch func(key interface{}) (interface{}, uint64, error), onEvict func(evicted []*LRUCacheEntry)) *LRUCache {
 	return &LRUCache{
 		cache:     make(map[interface{}]*LRUCacheEntry),
 		fetch:     fetch,
@@ -102,7 +103,7 @@ func (lruc *LRUCache) evictEntriesIfNecessary() []*LRUCacheEntry {
 		element := lruc.lruList.Back()
 		lruc.lruList.Remove(element)
 		entry := element.Value.(*LRUCacheEntry)
-		delete(lruc.cache, entry.key)
+		delete(lruc.cache, entry.Key)
 		lruc.size -= entry.size
 		pruned = append(pruned, entry)
 	}
@@ -110,12 +111,10 @@ func (lruc *LRUCache) evictEntriesIfNecessary() []*LRUCacheEntry {
 }
 
 // Calls the onEvict callback for a list of evicted entries. Should be called
-// without the cacheLock or lruLock acquired.
+// without the cacheLock acquired.
 func (lruc *LRUCache) callOnEvict(evicted []*LRUCacheEntry) {
 	if lruc.onEvict != nil {
-		for _, entry := range evicted {
-			lruc.onEvict(entry.key, entry.value)
-		}
+		lruc.onEvict(evicted)
 	}
 }
 
@@ -156,14 +155,14 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 
 		/* Cache hit. */
 		lruc.lruList.MoveToFront(entry.element)
-		value := entry.value
+		value := entry.Value
 		lruc.cacheLock.Unlock()
 		return value, nil
 	}
 
 	/* Cache miss. Create placeholder. */
 	entry = &LRUCacheEntry{
-		key:     key,
+		Key:     key,
 		pending: true,
 	}
 	lruc.cache[key] = entry
@@ -190,7 +189,7 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 		}
 
 		/* Store the result in the cache. */
-		entry.value = value
+		entry.Value = value
 		entry.size = size
 		entry.pending = false
 		close(entry.ready)
@@ -200,7 +199,7 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 		lruc.callOnEvict(evicted)
 	}
 
-	return entry.value, nil
+	return entry.Value, nil
 }
 
 // Put an entry with a known value into the cache.
@@ -211,7 +210,7 @@ func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool 
 	/* Check for case where it's already in the cache. */
 	if ok {
 		var evicted []*LRUCacheEntry
-		entry.value = value
+		entry.Value = value
 
 		/* If the entry is still pending, wake up any waiting threads. */
 		if entry.pending {
@@ -232,8 +231,8 @@ func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool 
 
 	/* Put it in the cache. */
 	entry = &LRUCacheEntry{
-		key:     key,
-		value:   value,
+		Key:     key,
+		Value:   value,
 		size:    size,
 		pending: false,
 		err:     nil,
@@ -258,7 +257,7 @@ func (lruc *LRUCache) Evict(key interface{}) bool {
 		return false
 	}
 	lruc.lruList.Remove(entry.element)
-	delete(lruc.cache, entry.key)
+	delete(lruc.cache, entry.Key)
 	lruc.size -= entry.size
 	return true
 }
