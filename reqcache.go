@@ -32,6 +32,7 @@ package reqcache
 
 import (
 	"container/list"
+	"context"
 	"sync"
 )
 
@@ -58,7 +59,7 @@ type LRUCacheEntry struct {
 	size    uint64
 	pending bool
 	err     error
-	ready   *sync.Cond
+	ready   chan struct{}
 	element *list.Element
 }
 
@@ -141,18 +142,27 @@ func (lruc *LRUCache) SetCapacity(capacity uint64) {
 // provided fetch() function returned an error. If Put() is called while
 // a fetch is blocking, then the result of the fetch is thrown away and the
 // value specified by Put() is returned.
-func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
+func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, error) {
 	lruc.cacheLock.Lock()
 	entry, ok := lruc.cache[key]
 	if ok {
 		/* Wait for the result if it's still pending. */
-		for entry.pending {
-			entry.ready.Wait()
+		if entry.pending {
+			var err error
+			lruc.cacheLock.Unlock()
+			select {
+			case <-entry.ready:
+				err = entry.err
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+			if err != nil {
+				/* There was an error fetching this value. */
+				return nil, err
+			}
+			lruc.cacheLock.Lock()
 		}
-		if entry.err != nil {
-			/* There was an error fetching this value. */
-			return nil, entry.err
-		}
+
 		/* Cache hit. */
 		lruc.lruLock.Lock()
 		lruc.lruList.MoveToFront(entry.element)
@@ -166,8 +176,6 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 	entry = &LRUCacheEntry{
 		key:     key,
 		pending: true,
-		err:     nil,
-		ready:   sync.NewCond(lruc.cacheLock),
 	}
 	lruc.cache[key] = entry
 	lruc.cacheLock.Unlock()
@@ -187,7 +195,7 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 			delete(lruc.cache, key)
 			entry.err = err
 			entry.pending = false
-			entry.ready.Broadcast()
+			close(entry.ready)
 			lruc.cacheLock.Unlock()
 			return nil, err
 		}
@@ -196,7 +204,7 @@ func (lruc *LRUCache) Get(key interface{}) (interface{}, error) {
 		entry.value = value
 		entry.size = size
 		entry.pending = false
-		entry.ready.Broadcast()
+		close(entry.ready)
 		evicted := lruc.addEntryToLRU(entry)
 		lruc.cacheLock.Unlock()
 
@@ -219,7 +227,7 @@ func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool 
 		/* If the entry is still pending, wake up any waiting threads. */
 		if entry.pending {
 			entry.pending = false
-			entry.ready.Broadcast()
+			close(entry.ready)
 
 			/* Add to the LRU list. */
 			evicted = lruc.addEntryToLRU(entry)
@@ -240,7 +248,7 @@ func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool 
 		size:    size,
 		pending: false,
 		err:     nil,
-		ready:   sync.NewCond(lruc.cacheLock),
+		ready:   nil,
 	}
 	lruc.cache[key] = entry
 	evicted := lruc.addEntryToLRU(entry)
