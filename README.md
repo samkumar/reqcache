@@ -1,5 +1,8 @@
 LRU Cache with Request Management
 =================================
+[![GoDoc](https://godoc.org/github.com/samkumar/reqcache?status.svg)](https://godoc.org/github.com/samkumar/reqcache)
+[![Go Report Card](https://goreportcard.com/badge/github.com/samkumar/reqcache)](https://goreportcard.com/report/github.com/samkumar/reqcache)
+
 This implements an LRU cache for a I/O resource. On a cache miss, the cache
 requests the resource, blocking until it is available. The cache has the
 property that if multiple requests are concurrently made for a resource that is
