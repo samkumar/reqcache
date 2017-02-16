@@ -39,7 +39,7 @@ import (
 // LRUCache represents a Cache with an LRU eviction policy
 type LRUCache struct {
 	cache     map[interface{}]*LRUCacheEntry
-	fetch     func(key interface{}) (interface{}, uint64, error)
+	fetch     func(ctx context.Context, key interface{}) (interface{}, uint64, error)
 	onEvict   func(evicted []*LRUCacheEntry)
 	lruList   *list.List
 	size      uint64
@@ -51,12 +51,44 @@ type LRUCache struct {
 // is the overhead of an entry existing in the cache. You should not have to
 // actually use it.
 type LRUCacheEntry struct {
-	Key     interface{}
-	Value   interface{}
-	size    uint64
+	// Key is the key of the key-value pair represented by this entry.
+	Key interface{}
+
+	// Value is the value of the key-value pair represented by this entry.
+	Value interface{}
+
+	size uint64
+	err  error
+
+	/*
+	 * Indicates whether or not there is a pending request for the Value. The
+	 * cacheLock should be held when reading or writing this variable. If it is
+	 * true, then the ready channel is open; otherwise, it is closed (or nil),
+	 * if no request was made.
+	 */
 	pending bool
-	err     error
-	ready   chan struct{}
+
+	/*
+	 * Stores the number of goroutines waiting for the result of the pending
+	 * fetch. If this number goes to zero, the fetch is cancelled. This is also
+	 * protected by the cacheLock.
+	 */
+	waiting uint64
+
+	/*
+	 * Should be called to free the context when the fetch is done.
+	 */
+	fetchdone func()
+
+	/*
+	 * Signal to all waiters that the result is ready by closing this channel.
+	 * Make sure you hold be the cacheLock before closing this channel!
+	 */
+	ready chan struct{}
+
+	/*
+	 * Stores the position of this entry in the LRU list.
+	 */
 	element *list.Element
 }
 
@@ -71,14 +103,18 @@ type LRUCacheEntry struct {
 // cache's capacity). It can also return an error, in which case the result is
 // not cached and the error is propagated to callers of Get(). No locks are
 // held when fetch is called, so it is suitable to do blocking operations to
-// fetch data.
+// fetch data. A context is also passed in, that is completely unrelated to the
+// context passed to Get(). This context may be cancelled if no pending calls
+// to get are interested in the result, which may happen if the contexts of all
+// requesting goroutines time out, or if Put() is caled while the request is
+// being fetched.
 // onEvict is a function that is whenever elements are evicted from the cache
 // according to the LRU replacement policy. It is called with the key-value
 // pairs representing the evicted elements passed as arguments. It is not
 // called with locks held, so it can perform blocking operations or even
 // interact with this cache. It can be set to nil if the onEvict callback is
 // not needed.
-func NewLRUCache(capacity uint64, fetch func(key interface{}) (interface{}, uint64, error), onEvict func(evicted []*LRUCacheEntry)) *LRUCache {
+func NewLRUCache(capacity uint64, fetch func(ctx context.Context, key interface{}) (interface{}, uint64, error), onEvict func(evicted []*LRUCacheEntry)) *LRUCache {
 	return &LRUCache{
 		cache:     make(map[interface{}]*LRUCacheEntry),
 		fetch:     fetch,
@@ -127,6 +163,12 @@ func (lruc *LRUCache) SetCapacity(capacity uint64) {
 	lruc.callOnEvict(evicted)
 }
 
+type fetchresult struct {
+	value interface{}
+	size  uint64
+	err   error
+}
+
 // Get returns the value corresponding to the specialized key, caching the
 // result. Returns an error if and only if there was a cache miss and the
 // provided fetch() function returned an error. If Put() is called while
@@ -139,6 +181,7 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 		/* Wait for the result if it's still pending. */
 		if entry.pending {
 			var err error
+			entry.waiting++
 			lruc.cacheLock.Unlock()
 			select {
 			case <-entry.ready:
@@ -146,11 +189,15 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 			case <-ctx.Done():
 				err = ctx.Err()
 			}
+			lruc.cacheLock.Lock()
+			if entry.waiting--; entry.waiting == 0 {
+				entry.fetchdone()
+			}
 			if err != nil {
 				/* There was an error fetching this value. */
+				lruc.cacheLock.Unlock()
 				return nil, err
 			}
-			lruc.cacheLock.Lock()
 		}
 
 		/* Cache hit. */
@@ -164,42 +211,74 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 	entry = &LRUCacheEntry{
 		Key:     key,
 		pending: true,
+		waiting: 1,
+		ready:   make(chan struct{}),
 	}
 	lruc.cache[key] = entry
+	fetchctx, fetchcancel := context.WithCancel(context.Background())
+	entry.fetchdone = fetchcancel
 	lruc.cacheLock.Unlock()
 
 	/* Fetch the value. */
-	value, size, err := lruc.fetch(key)
+	go func() {
+		value, size, err := lruc.fetch(fetchctx, key)
 
-	/*
-	 * If the pending flag is no longer set, then someone called Put()
-	 * meanwhile. We don't want to touch the cache or use the new value we
-	 * got; instead, just use the value that was put there.
-	 */
-	lruc.cacheLock.Lock()
-	if entry.pending {
-		/* Check for and handle any error in fetching the value. */
-		if err != nil {
-			delete(lruc.cache, key)
-			entry.err = err
+		lruc.cacheLock.Lock()
+		/*
+		 * If the pending flag is no longer set, then someone called Put()
+		 * meanwhile. We don't want to touch the cache or use the new value we
+		 * got; instead, just use the value that was put there.
+		 */
+		if entry.pending {
+			/* Check for and handle any error in fetching the value. */
+			if err != nil {
+				delete(lruc.cache, key)
+				entry.err = err
+				entry.pending = false
+				close(entry.ready)
+				lruc.cacheLock.Unlock()
+				return
+			}
+			/* Store the result in the cache. */
+			entry.Value = value
+			entry.size = size
 			entry.pending = false
 			close(entry.ready)
+			evicted := lruc.addEntryToLRU(entry)
 			lruc.cacheLock.Unlock()
-			return nil, err
+
+			lruc.callOnEvict(evicted)
+		} else {
+			lruc.cacheLock.Unlock()
 		}
+	}()
 
-		/* Store the result in the cache. */
-		entry.Value = value
-		entry.size = size
-		entry.pending = false
-		close(entry.ready)
-		evicted := lruc.addEntryToLRU(entry)
+	select {
+	case <-entry.ready:
+		/*
+		 * There are two cases. Someone may have called Put(), in which case
+		 * we can go ahead and cancel the fetch. Or, the fetch could have
+		 * completed. Either way, we return entry.Value.
+		 */
+		lruc.cacheLock.Lock()
+		if entry.waiting--; entry.waiting == 0 {
+			entry.fetchdone()
+		}
+		value := entry.Value
 		lruc.cacheLock.Unlock()
-
-		lruc.callOnEvict(evicted)
+		return value, nil
+	case <-ctx.Done():
+		/*
+		 * This context expired, but other goroutines may be waiting for this
+		 * result to appear. If none are, we can cancel the fetch.
+		 */
+		lruc.cacheLock.Lock()
+		if entry.waiting--; entry.waiting == 0 {
+			entry.fetchdone()
+		}
+		lruc.cacheLock.Unlock()
+		return nil, ctx.Err()
 	}
-
-	return entry.Value, nil
 }
 
 // Put an entry with a known value into the cache.
