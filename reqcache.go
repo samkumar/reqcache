@@ -36,7 +36,7 @@ import (
 	"sync"
 )
 
-// LRUCache represents a Cache with an LRU eviction policy
+// LRUCache represents a cache with the LRU eviction policy
 type LRUCache struct {
 	cache     map[interface{}]*LRUCacheEntry
 	fetch     func(ctx context.Context, key interface{}) (interface{}, uint64, error)
@@ -94,9 +94,9 @@ type LRUCacheEntry struct {
 
 // NewLRUCache returns a new instance of LRUCache.
 //
-// capacity is the capacity of the cache. If the sum of the sizes of elements in
-// the cache exceeds the capacity, the least recently used elements are evicted
-// from the cache.
+// capacity is the capacity of the cache. If the sum of the sizes of elements
+// in the cache exceeds the capacity, the least recently used elements are
+// evicted from the cache.
 //
 // fetch is a function that is called on cache misses to fetch the element that
 // is missing in the cache. The key that missed in the cache is passed as the
@@ -111,10 +111,10 @@ type LRUCacheEntry struct {
 // requesting goroutines time out, or if Put() is caled while the request is
 // being fetched.
 //
-// onEvict is a function that is whenever elements are evicted from the cache
-// according to the LRU replacement policy. It is called with the key-value
-// pairs representing the evicted elements passed as arguments. It is not
-// called with locks held, so it can perform blocking operations or even
+// onEvict is a function that is called whenever elements are evicted from the
+// cache according to the LRU replacement policy. It is called with the
+// key-value pairs representing the evicted elements passed as arguments. It is
+// not called with locks held, so it can perform blocking operations or even
 // interact with this cache. It can be set to nil if the onEvict callback is
 // not needed.
 func NewLRUCache(capacity uint64, fetch func(ctx context.Context, key interface{}) (interface{}, uint64, error), onEvict func(evicted []*LRUCacheEntry)) *LRUCache {
@@ -184,7 +184,7 @@ const (
 
 // TryGet checks if an element is present in the cache. The second return
 // value describes the presence of the item in the cache; if it is Present,
-// then provides the value corresponding to the provided key in the first
+// then the value corresponding to the provided key is provided in the first
 // return value.
 func (lruc *LRUCache) TryGet(key interface{}) (interface{}, CacheStatus) {
 	lruc.cacheLock.Lock()
@@ -203,9 +203,9 @@ func (lruc *LRUCache) TryGet(key interface{}) (interface{}, CacheStatus) {
 
 // Get returns the value corresponding to the specialized key, caching the
 // result. Returns an error if and only if there was a cache miss and the
-// provided fetch() function returned an error. If Put() is called while
-// a fetch is blocking, then the result of the fetch is thrown away and the
-// value specified by Put() is returned.
+// provided fetch() function returned an error. If Put() is called while a
+// fetch is blocking, then the result of the fetch is thrown away and the value
+// specified by Put() is returned.
 func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, error) {
 	lruc.cacheLock.Lock()
 	entry, ok := lruc.cache[key]
@@ -297,8 +297,9 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 			entry.fetchdone()
 		}
 		value := entry.Value
+		err := entry.err
 		lruc.cacheLock.Unlock()
-		return value, nil
+		return value, err
 	case <-ctx.Done():
 		/*
 		 * This context expired, but other goroutines may be waiting for this
@@ -313,12 +314,12 @@ func (lruc *LRUCache) Get(ctx context.Context, key interface{}) (interface{}, er
 	}
 }
 
-// Put an entry with a known value into the cache.
+// Put inserts an entry with a known value into the cache.
 func (lruc *LRUCache) Put(key interface{}, value interface{}, size uint64) bool {
 	lruc.cacheLock.Lock()
 	entry, ok := lruc.cache[key]
 
-	/* Check for case where it's already in the cache. */
+	/* Check for the case where it's already in the cache. */
 	if ok {
 		var evicted []*LRUCacheEntry
 		entry.Value = value
